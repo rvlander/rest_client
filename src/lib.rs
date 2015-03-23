@@ -1,20 +1,26 @@
-#![experimental]
-
 extern crate hyper;
 extern crate url;
+extern crate core;
 
 use hyper::Url;
 use hyper::client::Request;
-use hyper::method::{Get, Post, Delete, Put, Patch};
+use hyper::method::Method::{Get, Delete, Put, Post, Patch};
 
-use std::fmt::{mod, Show};
-use std::io::IoError;
+use std::fmt::Formatter;
+use std::fmt::Display;
+use std::io::Error;
 use url::ParseError;
 use hyper::HttpError;
-use hyper::header::common::ContentLength;
-use hyper::header::common::ContentType;
+use hyper::header::ContentLength;
+use hyper::header::ContentType;
+
+use hyper::mime::Mime;
 
 pub struct RestClient;
+
+use core::num::ToPrimitive;
+use std::io::Write;
+use std::io::Read;
 
 impl RestClient {
     // TODO: add cookies
@@ -60,7 +66,7 @@ impl RestClient {
     }    
 
     fn pstar_with_params( method:hyper::method::Method, url_str:&str, params:&[(&str, &str)]) -> Result<Response, RestError> {
-        let post_body = url::form_urlencoded::serialize(params.to_vec().into_iter(), None);
+        let post_body = url::form_urlencoded::serialize(params.to_vec().into_iter());
 
         RestClient::pstar( method, url_str, post_body.as_slice(), "application/x-www-form-urlencoded" )
     }
@@ -72,7 +78,7 @@ impl RestClient {
     pub fn new(method:hyper::method::Method, url_str:&str, url_params:Option<&[(&str, &str)]>, body:Option<&str>, content_type:Option<&str>) -> Result<Response, RestError> {
         let mut url = match Url::parse(url_str) {
             Ok(url) => url,
-            Err(err) => return Err(UrlParseError(err))
+            Err(err) => return Err(RestError::UrlParseError(err))
         };
 
         match url_params {
@@ -85,12 +91,12 @@ impl RestClient {
 
         let mut req = match Request::new(method, url) {
             Ok(req) => req,
-            Err(err) => return Err(HttpRequestError(err))
+            Err(err) => return Err(RestError::HttpRequestError(err))
         };
 
         match body {
             Some(body) =>
-                req.headers_mut().set(ContentLength(body.len())),
+                req.headers_mut().set(ContentLength(body.len() as u64)),
             None => 
                 // needed so that hyper doesn't try to send Transfer-Encoding:
                 // Chunked, which causes some servers (e.g. www.reddit.co) to
@@ -99,38 +105,42 @@ impl RestClient {
                 req.headers_mut().set(ContentLength(0))
         };
 
+        let mime: Mime = content_type.unwrap().parse().unwrap();
         match content_type {
             Some(content_type) =>
-                req.headers_mut().set(ContentType(from_str(content_type).unwrap())),
+                req.headers_mut().set(ContentType(mime)),
             None => ()
         };
 
         let mut req_started = match req.start() {
             Ok(req) => req,
-            Err(err) => return Err(HttpRequestError(err))
+            Err(err) => return Err(RestError::HttpRequestError(err))
         };
 
+        let mut void = ();
         match body {
             Some(body) =>
                 match req_started.write(body.as_bytes()) {
-                    Ok(()) => (),
-                    Err(err) => return Err(HttpIoError(err))
+                    Ok(void) => (),
+                    Err(err) => return Err(RestError::HttpIoError(err))
                 },
             None => ()
         };
 
         let mut resp = match req_started.send() {
             Ok(resp) => resp,
-            Err(err) => return Err(HttpRequestError(err))
+            Err(err) => return Err(RestError::HttpRequestError(err))
         };
 
-        let body = match resp.read_to_string() {
+
+        let mut body = String::new();
+        match resp.read_to_string(&mut body) {
             Ok(body) => body,
-            Err(err) => return Err(HttpIoError(err))
+            Err(err) => return Err(RestError::HttpIoError(err))
         };
 
         let rest_response = Response {
-            code: resp.status as i32,
+            code: resp.status.to_i32().unwrap(),
             status: resp.status,
             headers: resp.headers,
             body: body,
@@ -147,37 +157,36 @@ pub struct Response {
     pub body: String,
 }
 
-impl Show for Response {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+impl Display for Response {
+    fn fmt(&self, fmt: &mut Formatter) -> Result<(), std::fmt::Error> {
         self.body.fmt(fmt)
     }
 }
 
-#[deriving(Show, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum RestError {
     UrlParseError(ParseError),
     HttpRequestError(HttpError),
-    HttpIoError(IoError)
+    HttpIoError(Error)
 }
 
 #[cfg(test)]
 mod test {
-    extern crate rest_client;
     extern crate serialize;
-    use self::rest_client::RestClient;
+    use super::RestClient;
     use self::serialize::json;
 
     #[test]
     fn test_get() {
         let response = RestClient::get("http://www.reddit.com/hot.json?limit=1").unwrap();
         let response_json = json::from_str(response.body.as_slice()).unwrap();
-        assert!(response_json.find(&"data".to_string()).unwrap().find(&"children".to_string()).unwrap().as_list().unwrap().len() == 1);
-    }
+        assert!(response_json.find(&"data".to_string()).unwrap().find(&"children".to_string()).unwrap().as_array().unwrap().len() == 1);
+    }   
     
     #[test]
     fn test_get_with_params() {
-        let response = RestClient::get_with_params("http://www.reddit.com/hot.json", [("limit", "1")]).unwrap();
+        let response = RestClient::get_with_params("http://www.reddit.com/hot.json", &[("limit", "1")]).unwrap();
         let response_json = json::from_str(response.body.as_slice()).unwrap();
-        assert!(response_json.find(&"data".to_string()).unwrap().find(&"children".to_string()).unwrap().as_list().unwrap().len() == 1);
+        assert!(response_json.find(&"data".to_string()).unwrap().find(&"children".to_string()).unwrap().as_array().unwrap().len() == 1);
     }
 }
