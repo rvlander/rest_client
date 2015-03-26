@@ -1,3 +1,6 @@
+#![feature(core)]
+#![feature(rustc_private)]
+
 extern crate hyper;
 extern crate url;
 extern crate core;
@@ -105,11 +108,9 @@ impl RestClient {
                 req.headers_mut().set(ContentLength(0))
         };
 
-        let mime: Mime = content_type.unwrap().parse().unwrap();
         match content_type {
-            Some(content_type) =>
-                req.headers_mut().set(ContentType(mime)),
-            None => ()
+            Some (a) => req.headers_mut().set(ContentType(a.parse().unwrap())),
+            None => (),
         };
 
         let mut req_started = match req.start() {
@@ -165,7 +166,7 @@ impl Display for Response {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum RestError {
-    UrlParseError(ParseError),
+    UrlParseError(url::ParseError),
     HttpRequestError(HttpError),
     HttpIoError(Error)
 }
